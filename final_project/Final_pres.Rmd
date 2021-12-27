@@ -1,0 +1,228 @@
+---
+title: "Final Project - Does Draft Round Predict if a Player Reaches the MLB?"
+author: "Ben Steves"
+date: "12/10/2020"
+output: slidy_presentation
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+library(tidyverse)
+library(reticulate)
+library(tidymodels)
+require(glmnet)
+library(ggridges)
+py_run_string("import matplotlib.pyplot as plt; plt.switch_backend('agg')")
+theme_set(theme_bw())
+options(dplyr.summarise.inform = FALSE) # silence a warning message
+```
+
+
+```{r, warning=FALSE, include = FALSE}
+draft <- read.csv('draft_1965_2019.csv')
+draft <- draft %>%
+  #mutate(round = as.integer(round)) %>%
+  filter(draft_type == "JR", year < 2018, round <= 20) %>%
+  replace_na(list(so = 0)) %>%
+  mutate(year = as.factor(year)) %>%
+  mutate(mlb_g = as.factor(mlb_g)) %>%
+  separate(col = name_first_last, c("nameFirst", "nameLast"), sep = " ", extra = "merge", fill = "left") 
+```
+
+
+
+## MLB Draft
+
+- Major League Baseball (MLB) holds yearly draft
+- Best high school/college players aim to make majors
+- Best players taken in earlier rounds
+
+Main question: What effect does the round have on whether a player makes the MLB?
+
+
+## Data
+
+- From: MLB lookup service
+- Data of all drafted players from 1965-2019
+- Main variables of interest: 
+1. mlb_g 
+2. year
+3. round
+
+
+## How often do drafted players get to the MLB?
+
+```{r echo=FALSE}
+draft %>%
+  group_by(mlb_g) %>%
+  summarize(n = n()) %>%
+  ggplot(aes(x = mlb_g , y = n, fill = mlb_g)) +
+  geom_col() +
+  labs(x = "Appeared in MLB game", y = "# of players",
+       title3 = "Number of future MLB players drafted, 1965-2017")
+```
+
+## MLB players by round
+
+```{r}
+draft %>%
+  group_by(round, mlb_g) %>%
+  mutate(round = as.integer(round)) %>%
+  filter(mlb_g == "Y") %>%
+  summarize(n = n()) %>%
+  mutate(prop = n / nrow(draft)) %>%
+  mutate(round = as.integer(round)) %>%
+  ggplot(aes(x = round, y = prop, color = mlb_g)) +
+  geom_line(size = 1) +
+  labs(title = "Proportion of MLB players drafted in each round, 1965-2017",
+       x = "Round", "Proportion of players drafted")
+```
+
+## Logistic Regression Model
+
+```{r include = FALSE}
+set.seed(650)
+dsplit <- initial_split(draft, prop = 4 / 5)
+dtrain <- training(dsplit)
+dtest <- testing(dsplit)
+```
+
+```{r include = TRUE, echo = TRUE}
+spec <- workflow() %>% add_recipe(
+  recipe(mlb_g ~ round + year, data = dtrain)) %>% 
+  add_model(logistic_reg(mode = "classification") %>% set_engine("glm"))
+```
+
+```{r}
+dmodel <- spec %>% fit(dtrain)
+```
+
+```{r}
+dmodel %>% 
+  predict(dtrain, type = "prob") %>%
+  bind_cols(dtrain) %>%
+  mutate(idx = row_number()) %>% 
+  ggplot(aes(x = idx, y = .pred_Y, color = mlb_g)) +
+  facet_wrap(~fct_relevel(mlb_g, "Y", "N")) +
+  geom_hline(yintercept = .5) +
+  geom_point(alpha = 0.6) +
+  labs(title = "How well does the model predict if a player reaches the MLB?",
+       y = "Predicted Yes", x = "Observations by row #",
+       caption = 
+       "Top left: True Positives \n
+       Top right: False Positives \n
+       Bottom left: False Negatives \n
+       Bottom right: True Negatives")
+```
+
+
+## Logistic Regression Performance
+
+On training set:
+
+```{r echo = FALSE}
+metrics <- yardstick::metric_set(accuracy, sensitivity, specificity)
+dmodel %>% 
+  predict(dtrain, type = "class") %>% 
+  bind_cols(dtrain) %>% 
+  metrics(truth = mlb_g, estimate = .pred_class)
+```
+
+Cross Validation:
+
+```{r echo = FALSE}
+resamples <- dtrain %>% vfold_cv(v = 10, strata = mlb_g)
+cv_results <- spec %>%
+  fit_resamples(resamples, metrics = metrics)
+cv_results %>%
+  collect_metrics(summarize = TRUE)
+```
+
+## Logistic Regression Performance (continued)
+
+- Good at predicting players that make the MLB (eliminates false negatives)
+- Bad at predicting players that didn't pan out (lots of false positives)
+
+## Decision Tree Model
+
+```{r include = TRUE, echo = TRUE}
+spec1 <- workflow() %>% add_recipe(
+  recipe(mlb_g ~ round + year, data = dtrain)) %>%
+  add_model(decision_tree(mode = "classification", cost_complexity = 0.0001) %>% set_engine("rpart"))
+```
+
+```{r}
+model <- spec1 %>% fit(dtrain)
+```
+
+```{r}
+model %>% 
+  predict(dtrain, type = "prob") %>%
+  bind_cols(dtrain) %>%
+  mutate(idx = row_number()) %>% 
+  ggplot(aes(x = idx, y = .pred_Y, color = mlb_g)) +
+  facet_wrap(~fct_relevel(mlb_g, "Y", "N")) +
+  geom_hline(yintercept = .5) +
+  geom_point(alpha = 0.3) +
+  labs(title = "How well does the model predict if a player reaches the MLB? (DT model)",
+       y = "Predicted Yes", x = "Observations by row #",
+       caption = 
+       "Top left: True Positives \n
+       Top right: False Positives \n
+       Bottom left: False Negatives \n
+       Bottom right: True Negatives")
+```
+
+## Decision Tree Performance
+
+```{r echo = FALSE}
+metrics <- yardstick::metric_set(accuracy, sensitivity, specificity)
+model %>% 
+  predict(dtrain, type = "class") %>% 
+  bind_cols(dtrain) %>% 
+  metrics(truth = mlb_g, estimate = .pred_class)
+```
+
+```{r echo = FALSE}
+resamples1 <- dtrain %>% vfold_cv(v = 10, strata = mlb_g)
+cv_results1 <- spec1 %>%
+  fit_resamples(resamples1, metrics = metrics)
+cv_results1 %>%
+  collect_metrics(summarize = TRUE) 
+```
+
+## Decision Tree Performance (continued)
+
+- Very slight improvements on training data
+- Very slight deterioration  on cv
+
+## Testing
+
+Decision Tree
+
+```{r echo= FALSE}
+metrics <- yardstick::metric_set(accuracy, sensitivity, specificity)
+model %>% 
+  predict(dtest, type = "class") %>% 
+  bind_cols(dtest) %>% 
+  metrics(truth = mlb_g, estimate = .pred_class)
+```
+
+Logistic regression
+
+```{r echo = FALSE}
+metrics <- yardstick::metric_set(accuracy, sensitivity, specificity)
+dmodel %>% 
+  predict(dtest, type = "class") %>% 
+  bind_cols(dtest) %>% 
+  metrics(truth = mlb_g, estimate = .pred_class)
+```
+
+## Results
+
+- Logistic regression better on test data than DT, just slightly
+- Very similar tasks, so not much changed
+- Most other variables were hard to use, some only collected for MLB players
+- Fairly accurate at predicting mlb_g
+- Good at predicting players that make the MLB (eliminates false negatives)
+- Bad at predicting players that didn't pan out (lots of false positives)

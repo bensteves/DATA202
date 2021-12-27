@@ -1,0 +1,44 @@
+---
+title: "Read in data in python - copy to proj"
+author: "Ben Steves"
+date: "12/9/2020"
+output: pdf_document
+---
+
+
+```{r setup, include=FALSE, message=FALSE}
+library(tidyverse)
+library(reticulate)
+# Avoid the Python crash
+py_run_string("import matplotlib.pyplot as plt; plt.switch_backend('agg')")
+theme_set(theme_bw())
+options(dplyr.summarise.inform = FALSE) # silence a warning message
+```
+
+```{python python-setup, echo=FALSE}
+import numpy as np
+import pandas as pd
+import json
+import requests
+pd.set_option("display.max_columns",100)
+```
+
+```{python}
+pd.read_json("https://lookup-service-prod.mlb.com/json/named.historical_draft.bam?season=1965") # this doesn't work, shame
+```
+
+```{python}
+def get_draft_data(year):
+    print(f"getting year {year}")
+    json_reply = requests.get(f"https://lookup-service-prod.mlb.com/json/named.historical_draft.bam?season={year}").json()
+    df = pd.DataFrame(json_reply["historical_draft"]["queryResults"]["row"])
+    df["year"] = year
+    return df
+```
+
+```{python}
+draft_df = pd.concat([ get_draft_data(yr) for yr in range(1965, 2020) ])
+draft_df.to_csv("draft_1965_2019.csv", index=False)
+```
+
+
